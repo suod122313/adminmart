@@ -873,12 +873,16 @@
                         اثنين أو اتركهم فارغين</p>
                 </div>
                 <div class="form-group" style="margin-top:14px;">
-                    <label class="lbl">صورة المنتج <span style="color:var(--red)">*</span> <span
-                            style="color:var(--muted)">(أقل من 2MB)</span></label>
+                    <label class="lbl">صورة المنتج <span style="color:var(--red)">*</span></label>
                     <input type="file" id="pImage" class="inp-full" accept="image/*" required
                         onchange="previewImg(this,'addPreview','addPreviewImg')">
                     <div class="img-preview" id="addPreview"><img id="addPreviewImg" alt=""></div>
-                    <p id="imgSizeErr" class="err-msg" style="margin-top:6px;">⚠️ الصورة أكبر من 2MB</p>
+                    <p id="imgSizeErr" class="err-msg" style="margin-top:6px;display:none;"></p>
+                    <button type="button" id="removeBgAddBtn"
+                        onclick="triggerRemoveBg('pImage','addPreviewImg','removeBgAddBtn')"
+                        style="display:none;margin-top:10px;width:100%;padding:10px;border-radius:12px;border:1.5px dashed #9B6BFF;background:rgba(155,107,255,0.1);color:#9B6BFF;font-family:inherit;font-weight:700;font-size:13px;cursor:pointer;transition:all 0.2s;">
+                        ✨ إزالة الخلفية بالذكاء الاصطناعي (اختياري)
+                    </button>
                 </div>
                 <button type="submit" class="btn-primary" id="addBtn" style="width:100%;padding:14px;">
                     <span id="addBtnTxt">إضافة المنتج</span>
@@ -936,7 +940,12 @@
                     <input type="file" id="editImage" class="inp-full" accept="image/*"
                         onchange="previewImg(this,'editPreview','editPreviewImg')">
                     <div class="img-preview" id="editPreview"><img id="editPreviewImg" alt=""></div>
-                    <p id="editImgSizeErr" class="err-msg" style="margin-top:6px;">⚠️ الصورة أكبر من 2MB</p>
+                    <p id="editImgSizeErr" class="err-msg" style="margin-top:6px;display:none;"></p>
+                    <button type="button" id="removeBgEditBtn"
+                        onclick="triggerRemoveBg('editImage','editPreviewImg','removeBgEditBtn')"
+                        style="display:none;margin-top:10px;width:100%;padding:10px;border-radius:12px;border:1.5px dashed #9B6BFF;background:rgba(155,107,255,0.1);color:#9B6BFF;font-family:inherit;font-weight:700;font-size:13px;cursor:pointer;transition:all 0.2s;">
+                        ✨ إزالة الخلفية بالذكاء الاصطناعي (اختياري)
+                    </button>
                 </div>
                 <div style="display:flex;gap:10px;margin-top:6px;">
                     <button type="submit" class="btn-primary" style="flex:1;padding:13px;">حفظ التعديلات</button>
@@ -960,7 +969,7 @@
             appId: "1:140878579052:web:53a52b34a176171cf6df49"
         });
         const db = firebase.firestore();
-        const MAX_IMG = 2 * 1024 * 1024;
+        const MAX_IMG = 999 * 1024 * 1024;
 
         const storeLabels = {
             market: 'البقالات', restaurant: 'المطاعم', coffee: 'كوفي',
@@ -991,11 +1000,128 @@
         }
 
         // File to base64
-        function toBase64(file) {
+        function removeBackgroundFromCanvas(imgEl) {
+            const MAX_DIM = 1200;
+            const canvas = document.createElement('canvas');
+            let w = imgEl.naturalWidth || imgEl.width, h = imgEl.naturalHeight || imgEl.height;
+            if (w > MAX_DIM || h > MAX_DIM) {
+                if (w >= h) { h = Math.round(h * MAX_DIM / w); w = MAX_DIM; }
+                else { w = Math.round(w * MAX_DIM / h); h = MAX_DIM; }
+            }
+            canvas.width = w; canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(imgEl, 0, 0, w, h);
+            const imageData = ctx.getImageData(0, 0, w, h);
+            const data = imageData.data;
+            const tol = 35;
+            function match(idx, r, g, b) {
+                return Math.abs(data[idx] - r) <= tol && Math.abs(data[idx + 1] - g) <= tol && Math.abs(data[idx + 2] - b) <= tol;
+            }
+            function fill(sx, sy, tr, tg, tb) {
+                const stack = [[sx, sy]], vis = new Uint8Array(w * h);
+                while (stack.length) {
+                    const [x, y] = stack.pop();
+                    if (x < 0 || x >= w || y < 0 || y >= h) continue;
+                    const i = (y * w + x) * 4;
+                    if (vis[y * w + x] || !match(i, tr, tg, tb)) continue;
+                    vis[y * w + x] = 1; data[i + 3] = 0;
+                    stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+                }
+            }
+            [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]].forEach(([cx, cy]) => {
+                const i = (cy * w + cx) * 4; fill(cx, cy, data[i], data[i + 1], data[i + 2]);
+            });
+            ctx.putImageData(imageData, 0, 0);
+            return canvas;
+        }
+
+        async function triggerRemoveBg(inputId, previewImgId, btnId) {
+            const btn = document.getElementById(btnId);
+            const previewImg = document.getElementById(previewImgId);
+            const fileInput = document.getElementById(inputId);
+            if (!fileInput.files[0] && !previewImg.src) return;
+            btn.disabled = true;
+            btn.textContent = '⏳ جاري إزالة الخلفية...';
+            try {
+                const imgEl = new Image();
+                imgEl.onload = () => {
+                    const cleaned = removeBackgroundFromCanvas(imgEl);
+                    const result = cleaned.toDataURL('image/png');
+                    previewImg.src = result;
+                    // حفظ النتيجة كـ data URL مؤقت للاستخدام عند الحفظ
+                    fileInput.dataset.processedImage = result;
+                    btn.style.background = 'rgba(0,214,143,0.15)';
+                    btn.style.borderColor = '#00D68F';
+                    btn.style.color = '#00D68F';
+                    btn.textContent = '✅ تمت إزالة الخلفية';
+                    btn.disabled = false;
+                };
+                imgEl.src = previewImg.src;
+            } catch (e) {
+                btn.textContent = '❌ حدث خطأ، حاول مرة أخرى';
+                btn.disabled = false;
+            }
+        }
+
+        function toBase64(file, processedDataUrl) {
             return new Promise((res, rej) => {
+                const loadAndCompress = (src) => {
+                    const img = new Image();
+                    img.onerror = rej;
+                    img.onload = () => {
+                        const TARGET = 700 * 1024;
+                        const compress = (dimLimit, quality) => {
+                            const canvas = document.createElement('canvas');
+                            let w = img.width, h = img.height;
+                            if (w > dimLimit || h > dimLimit) {
+                                if (w >= h) { h = Math.round(h * dimLimit / w); w = dimLimit; }
+                                else { w = Math.round(w * dimLimit / h); h = dimLimit; }
+                            }
+                            canvas.width = w; canvas.height = h;
+                            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                            return canvas.toDataURL('image/jpeg', quality);
+                        };
+                        let result = compress(1200, 0.85);
+                        if (result.length <= TARGET) { res(result); return; }
+                        for (let q = 0.75; q >= 0.3; q -= 0.1) { result = compress(1200, q); if (result.length <= TARGET) { res(result); return; } }
+                        for (let dim = 900; dim >= 400; dim -= 150) { result = compress(dim, 0.5); if (result.length <= TARGET) { res(result); return; } }
+                        res(compress(400, 0.4));
+                    };
+                    img.src = src;
+                };
+                if (processedDataUrl) { loadAndCompress(processedDataUrl); return; }
                 const r = new FileReader();
-                r.onloadend = () => res(r.result);
                 r.onerror = () => rej(new Error('خطأ في قراءة الصورة'));
+                r.onloadend = () => {
+                    const img = new Image(); // dummy - replaced above
+                    img.onerror = rej;
+                    img.onload = () => {
+                        const TARGET = 700 * 1024;
+                        const compress = (dimLimit, quality) => {
+                            const canvas = document.createElement('canvas');
+                            let w = img.width, h = img.height;
+                            if (w > dimLimit || h > dimLimit) {
+                                if (w >= h) { h = Math.round(h * dimLimit / w); w = dimLimit; }
+                                else { w = Math.round(w * dimLimit / h); h = dimLimit; }
+                            }
+                            canvas.width = w; canvas.height = h;
+                            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                            return canvas.toDataURL('image/jpeg', quality);
+                        };
+                        let result = compress(1200, 0.85);
+                        if (result.length <= TARGET) { res(result); return; }
+                        for (let q = 0.75; q >= 0.3; q -= 0.1) {
+                            result = compress(1200, q);
+                            if (result.length <= TARGET) { res(result); return; }
+                        }
+                        for (let dim = 900; dim >= 400; dim -= 150) {
+                            result = compress(dim, 0.5);
+                            if (result.length <= TARGET) { res(result); return; }
+                        }
+                        res(compress(400, 0.4));
+                    };
+                    img.src = r.result;
+                };
                 r.readAsDataURL(file);
             });
         }
@@ -1018,7 +1144,7 @@
 
         async function _hashPass(plain) {
             const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(plain));
-            return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+            return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
         // Login
@@ -1220,12 +1346,13 @@
             const errEl = document.getElementById('imgSizeErr');
             const btn = document.getElementById('addBtn');
             if (!file) return;
-            if (file.size > MAX_IMG) { errEl.style.display = 'block'; return; }
             errEl.style.display = 'none';
             btn.disabled = true;
             document.getElementById('addBtnTxt').innerHTML = '<span class="spinner"></span> جاري الإضافة...';
             try {
-                const img = await toBase64(file);
+                const processed = document.getElementById('pImage').dataset.processedImage || null;
+                const img = await toBase64(file, processed);
+                delete document.getElementById('pImage').dataset.processedImage;
                 const optName = document.getElementById('pOptionName').value.trim();
                 const optVals = document.getElementById('pOptionValues').value.trim();
                 const opts = optVals ? optVals.split(',').map(v => v.trim()).filter(v => v) : [];
@@ -1273,7 +1400,12 @@
             updateEditTempButtons();
             document.getElementById('editModal').classList.add('open');
         }
-        function closeEdit() { document.getElementById('editModal').classList.remove('open'); }
+        function closeEdit() {
+            document.getElementById('editModal').classList.remove('open');
+            const btn = document.getElementById('removeBgEditBtn');
+            if (btn) { btn.style.display = 'none'; btn.textContent = '✨ إزالة الخلفية بالذكاء الاصطناعي (اختياري)'; btn.style.background = 'rgba(155,107,255,0.1)'; btn.style.borderColor = '#9B6BFF'; btn.style.color = '#9B6BFF'; }
+            delete document.getElementById('editImage').dataset.processedImage;
+        }
 
         async function saveEdit(e) {
             e.preventDefault();
@@ -1283,8 +1415,7 @@
             let imgData = document.getElementById('editCurrentImage').value;
             errEl.style.display = 'none';
             if (file) {
-                if (file.size > MAX_IMG) { errEl.style.display = 'block'; return; }
-                try { imgData = await toBase64(file); } catch (err) { toast('خطأ في الصورة', true); return; }
+                try { const proc = document.getElementById('editImage').dataset.processedImage || null; imgData = await toBase64(file, proc); delete document.getElementById('editImage').dataset.processedImage; } catch (err) { toast('خطأ في الصورة', true); return; }
             }
             const optName = document.getElementById('editOptionName').value.trim();
             const optVals = document.getElementById('editOptionValues').value.trim();
@@ -1385,6 +1516,9 @@
             document.getElementById('addModal').classList.add('open');
         }
         function closeAddModal() {
+            const btn = document.getElementById('removeBgAddBtn');
+            if (btn) { btn.style.display = 'none'; btn.textContent = '✨ إزالة الخلفية بالذكاء الاصطناعي (اختياري)'; btn.style.background = 'rgba(155,107,255,0.1)'; btn.style.borderColor = '#9B6BFF'; btn.style.color = '#9B6BFF'; }
+            delete document.getElementById('pImage').dataset.processedImage;
             document.getElementById('addModal').classList.remove('open');
         }
         // Close modal when clicking overlay background
